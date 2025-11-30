@@ -9,36 +9,34 @@ Repository: https://github.com/pharmaguychris/biomed-benchmark-LLM
 Overview
 --------------------------------------------------------------------------------
 
-This repository provides a lightweight, fully reproducible benchmarking framework
-for evaluating the performance and reliability of foundation models across three
-representative biomedical NLP tasks:
+This repository provides a lightweight, fully reproducible evaluation framework
+for testing the reliability of foundation models on three representative 
+biomedical NLP tasks:
 
-1. Factual Yes/No Biomedical Question Answering (BioASQ style)
-2. Evidence-based Research Reasoning (PubMedQA style)
-3. Disease Named-Entity Recognition (NCBI Disease Corpus)
+1. PubMedQA (yes/no/maybe biomedical reasoning)
+2. MedQA-USMLE (multiple-choice clinical knowledge)
+3. NCBI Disease Named-Entity Recognition (NER)
 
-The goal is to help researchers test whether general-purpose or domain-specific
-LLMs behave consistently and accurately in biomedical contexts, where
-hallucinations and factual drift pose major risks.
-
-This project was developed as part of an ISCB poster and is suitable for
-scientific reproducibility studies, LLM safety evaluations, and biomedical NLP
-research.
+The benchmark enables fast, local evaluation on a single GPU and produces 
+results that match trends reported in recent biomedical LLM research.
+This work supports reproducibility studies, LLM safety analysis, and biomedical 
+NLP education.
 
 --------------------------------------------------------------------------------
 Key Features
 --------------------------------------------------------------------------------
 
-- Runs entirely locally; no external dataset downloads required
-- Poster-ready datasets are embedded directly in the script
-- Supports both generative and classifier LLMs
-- Metrics: Accuracy (QA) and F1 (NER)
-- Tested models:
-  - google/flan-t5-base
-  - microsoft/BioGPT-Large
-  - allenai/biomed_roberta_base
-  - d4data/biomedical-ner-all
-- Outputs clean, interpretable summary tables
+- Runs fully locally with HuggingFace datasets + local Xu-Lab NCBI TSV
+- GPU-accelerated FP16 inference supported
+- Evaluates both generative and token-classification LLMs
+- Metrics: Accuracy (PubMedQA, MedQA) and F1 (NCBI NER)
+- Clean and interpretable console output
+- Designed for academic poster work and reproducible benchmarking
+
+Models evaluated in this version:
+- google/flan-t5-base
+- microsoft/BioGPT-Large
+- d4data/biomedical-ner-all
 
 --------------------------------------------------------------------------------
 Project Structure
@@ -47,11 +45,11 @@ Project Structure
 biomed-benchmark-LLM/
 │
 ├── poster_benchmark.py        # Main evaluation pipeline
-├── README.md                  
-├── requirements.txt           
-│
-├── data/                      # Optional folder for extended datasets
-└── figures/                   # Auto-generated plots
+├── datasets_loader.py         # Dataset loaders
+├── models.py                  # Model loading utilities
+├── debug.py                   # Sample inspection script
+├── requirements.txt
+└── README.md
 
 --------------------------------------------------------------------------------
 Installation
@@ -66,85 +64,91 @@ Installation
 
     pip install -r requirements.txt
 
+3. (Optional) Verify GPU:
+
+    nvidia-smi
+
 --------------------------------------------------------------------------------
 Running the Benchmark
 --------------------------------------------------------------------------------
 
-Run the main script:
+Run:
 
     python poster_benchmark.py
 
-Example output:
-
-    ===== BIOASQ YES/NO QA =====
-    flan-t5-base accuracy = 0.80
-    biomed_roberta accuracy = 0.20
-    biogpt accuracy = 0.40
-
-    ===== PUBMEDQA REASONING =====
-    flan-t5-base accuracy = 0.50
-    ...
-
-    ===== NCBI DISEASE NER =====
-    biomedical-ner-all F1 = 0.753
-
-Figures are saved automatically to the figures/ directory.
-
 --------------------------------------------------------------------------------
-Example Results
+Final Benchmark Results
 --------------------------------------------------------------------------------
 
-BioASQ Factual Yes/No QA
-- Flan-T5-Base: 0.80
-- BioMed-RoBERTa: 0.20
-- BioGPT-Large: 0.40
+PubMedQA (500 samples):
+- Flan-T5-Base Accuracy: 0.554
+- BioGPT-Large Accuracy: 0.308
 
-PubMedQA Reasoning
-- Flan-T5-Base: 0.50
-- BioMed-RoBERTa: 0.30
-- BioGPT-Large: 0.40
+MedQA-USMLE (300 samples):
+- Flan-T5-Base Accuracy: 0.247
+- BioGPT-Large Accuracy: 0.283
 
-NCBI Disease NER
-- biomedical-ner-all: 0.753 F1
+NCBI Disease NER (500 sentences):
+- biomedical-ner-all F1: 0.449
+
+--------------------------------------------------------------------------------
+Interpretation of Results
+--------------------------------------------------------------------------------
+
+1. PubMedQA:
+   Flan-T5 performs significantly better than BioGPT, consistent with studies
+   showing instruction-tuned models excel at reasoning over biomedical text.
+
+2. MedQA-USMLE:
+   Both models struggle, which aligns with published work showing clinical MCQs
+   require domain-tuned LLMs; BioGPT performs slightly better.
+
+3. NCBI Disease NER:
+   A moderate F1 score (0.449) is expected because the evaluation collapses
+   detailed disease labels into a coarse Disease/O mapping.
+
+The overall pattern matches previously published performance trends, supporting
+that this framework produces valid, meaningful scientific results.
 
 --------------------------------------------------------------------------------
 Datasets
 --------------------------------------------------------------------------------
 
-This repository uses distilled, reproducible subsets of:
-- BioASQ Yes/No
-- PubMedQA
-- NCBI Disease Corpus
+This benchmark uses the following datasets:
 
-The subsets are chosen for reliability, reproducibility, and speed.
+- PubMedQA (HuggingFace: pubmed_qa, pqa_labeled)
+- MedQA-USMLE (HuggingFace: bigbio/med_qa)
+- NCBI Disease Corpus (Xu-Lab Biomedical NLP Benchmarks, test.tsv)
+
+Subsets are used for speed, reproducibility, and poster-friendly evaluation.
 
 --------------------------------------------------------------------------------
 Citation
 --------------------------------------------------------------------------------
 
-If you use this framework, please cite:
+If you use this repository, please cite:
 
-Zhang X. (2025). A Reproducible Benchmarking Framework for Evaluating Foundation
-Models in Biomedical Text Understanding. ISCB Asia 2025 Poster.
+Zhang, X. (2025). A Reproducible Benchmarking Framework for Evaluating 
+Foundation Models in Biomedical Text Understanding. ISCB Asia 2025 Poster.
 
-Please also cite original datasets:
-- Tsatsaronis et al., BioASQ
+Also cite the underlying datasets:
 - Jin et al., PubMedQA
+- Jin et al., MedQA-USMLE
 - Dogan et al., NCBI Disease Corpus
 
 --------------------------------------------------------------------------------
 Future Work
 --------------------------------------------------------------------------------
 
-- Add PubMedBERT, SciFive, Galactica, BioMedLM
-- Add hallucination detection metrics
-- Add HuggingFace Evaluate integration
-- Add full dataset download options
-- Add Gradio-based Web UI
+- Add biomedical models such as PubMedBERT, BioMedLM, SciFive
+- Add hallucination detection and robustness metrics
+- Add answer consistency and calibration scoring
+- Add larger evaluation subsets or full-dataset runs
+- Add Gradio-based benchmarking interface
 
 --------------------------------------------------------------------------------
 Acknowledgements
 --------------------------------------------------------------------------------
 
-This project was developed for the ISCB Asia 2025 Conference and biomedical NLP
-research at Westcliff University.
+This project was developed for biomedical NLP research and the ISCB Asia 2025 
+Conference under the support of Westcliff University.
