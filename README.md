@@ -132,9 +132,10 @@ Zhang, X. (2025). A Reproducible Benchmarking Framework for Evaluating
 Foundation Models in Biomedical Text Understanding. ISCB Asia 2025 Poster.
 
 Also cite the underlying datasets:
-- Jin et al., PubMedQA
-- Jin et al., MedQA-USMLE
-- Dogan et al., NCBI Disease Corpus
+- PubMedQA: A Dataset for Biomedical Research Question Answering (Jin et al., EMNLP-IJCNLP 2019)
+- MedQA-USMLE : A Dataset for Biomedical Research Question Answering (Jin et al., EMNLP-IJCNLP 2019)
+- Doğan, R. I., Leaman, R., & Lu, Z. (2014). NCBI disease corpus: a resource for disease name recognition and concept normalization. Journal of biomedical informatics, 47, 1–10. https://doi.org/10.1016/j.jbi.2013.12.006
+- Xuguang Ai, Qingyu Chen, Yan(Sawyer) Hu, & Jimin Huang. (2025). BIDS-Xu-Lab/Biomedical-NLP-Benchmarks: v1.0.1 (v1.0.1). Zenodo. https://doi.org/10.5281/zenodo.15002764
 
 --------------------------------------------------------------------------------
 Future Work
