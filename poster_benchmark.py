@@ -1,331 +1,378 @@
+import os
+import re
+import csv
+from collections import Counter
+
 import torch
+from datasets import load_dataset
 from transformers import (
     AutoTokenizer,
     AutoModelForSeq2SeqLM,
     AutoModelForCausalLM,
     AutoModelForTokenClassification,
-    AutoModelForSequenceClassification,
 )
 from seqeval.metrics import f1_score
 
+# ============================================================
+# DEVICE & SETTINGS
+# ============================================================
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
+USE_FP16 = DEVICE == "cuda"
+
+PUBMED_LIMIT = 500
+MEDQA_LIMIT = 300
+NCBI_LIMIT = 500
+
+NCBI_TSV_PATH = r"C:\Users\chris\Downloads\Biomedical-NLP-Benchmarks-v1.0.0\BIDS-Xu-Lab-Biomedical-NLP-Benchmarks-510cad1\benchmarks\[NER]NCBI_Disease\datasets\full_set\test.tsv"
+
 
 # ============================================================
-# 1. REAL BIOASQ YES/NO QUESTIONS
+# HELPERS
 # ============================================================
+def truncate_words(text, max_tokens):
+    if not text:
+        return ""
+    words = text.split()
+    return " ".join(words[:max_tokens])
 
-BIOASQ_YESNO = [
-    {
-        "context": "Insulin therapy is required for the management of type 1 diabetes because the pancreas produces little to no insulin.",
-        "question": "Is insulin required in the treatment of type 1 diabetes?",
-        "answer": "yes",
-    },
-    {
-        "context": "Human papillomavirus infection is a necessary factor for cervical cancer development but most infections do not progress to cancer.",
-        "question": "Does every HPV infection lead to cervical cancer?",
-        "answer": "no",
-    },
-    {
-        "context": "Statins reduce LDL cholesterol and are widely used for cardiovascular risk reduction.",
-        "question": "Do statins reduce LDL levels?",
-        "answer": "yes",
-    },
-    {
-        "context": "Antibiotic therapy is not effective for viral infections like the common cold.",
-        "question": "Are antibiotics effective for treating the common cold?",
-        "answer": "no",
-    },
-    {
-        "context": "Physical exercise has been associated with reduced risk of type 2 diabetes in multiple studies.",
-        "question": "Is physical exercise associated with reduced type 2 diabetes risk?",
-        "answer": "yes",
-    },
-    {
-        "context": "Aspirin use for primary prevention remains controversial due to increased bleeding risk.",
-        "question": "Is aspirin strongly recommended for primary prevention in all individuals?",
-        "answer": "no",
-    },
-    {
-        "context": "High salt intake is associated with increased blood pressure, although individual responses vary.",
-        "question": "Does dietary salt intake always raise blood pressure in every person?",
-        "answer": "maybe",
-    },
-    {
-        "context": "Some probiotics have shown benefit in irritable bowel syndrome, but results vary across trials.",
-        "question": "Is the evidence consistent that probiotics improve IBS symptoms?",
-        "answer": "maybe",
-    },
-    {
-        "context": "ACE inhibitors are commonly prescribed for hypertension and heart failure.",
-        "question": "Are ACE inhibitors used to treat hypertension?",
-        "answer": "yes",
-    },
-    {
-        "context": "Vitamin C supplementation has not consistently demonstrated benefit in preventing the common cold.",
-        "question": "Does vitamin C reliably prevent the common cold?",
-        "answer": "no",
-    },
-]
-
-# ============================================================
-# 2. PUBMEDQA-STYLE REASONING (10 samples)
-# ============================================================
-
-PUBMEDQA = [
-    {
-        "context": "Beta blockers have been shown to reduce post-myocardial infarction mortality in numerous randomized trials.",
-        "question": "Do beta blockers reduce mortality after myocardial infarction?",
-        "answer": "yes",
-    },
-    {
-        "context": "High sodium intake is linked to hypertension, but interventional studies show variable effects depending on baseline dietary habits.",
-        "question": "Is the effect of salt intake on hypertension completely consistent?",
-        "answer": "maybe",
-    },
-    {
-        "context": "Low-carbohydrate diets can promote weight loss, though long-term metabolic outcomes remain uncertain.",
-        "question": "Are the long-term effects of low-carbohydrate diets fully established?",
-        "answer": "maybe",
-    },
-    {
-        "context": "IL-5 inhibitors significantly reduce exacerbation rates in severe eosinophilic asthma.",
-        "question": "Do IL-5 inhibitors reduce asthma exacerbations?",
-        "answer": "yes",
-    },
-    {
-        "context": "Remdesivir demonstrates antiviral activity, but clinical trial evidence for mortality benefit in COVID-19 remains inconsistent.",
-        "question": "Is remdesivir conclusively proven to reduce COVID-19 mortality?",
-        "answer": "no",
-    },
-    {
-        "context": "Intermittent fasting may improve insulin sensitivity, though effects differ across populations.",
-        "question": "Is intermittent fasting consistently effective across all populations?",
-        "answer": "maybe",
-    },
-    {
-        "context": "SGLT2 inhibitors reduce hospitalization for heart failure among patients with diabetes.",
-        "question": "Do SGLT2 inhibitors reduce heart failure hospitalization?",
-        "answer": "yes",
-    },
-    {
-        "context": "Omega-3 fatty acids show mixed evidence regarding reduction of cardiovascular events.",
-        "question": "Do omega-3 supplements consistently prevent cardiovascular disease?",
-        "answer": "no",
-    },
-    {
-        "context": "Checkpoint inhibitors have transformed treatment for multiple solid tumors, offering durable responses.",
-        "question": "Do immune checkpoint inhibitors improve outcomes in advanced cancers?",
-        "answer": "yes",
-    },
-    {
-        "context": "High-dose vitamin D supplementation does not consistently reduce respiratory infections.",
-        "question": "Does high-dose vitamin D reliably prevent respiratory infection?",
-        "answer": "no",
-    },
-]
-
-# ============================================================
-# 3. NCBI DISEASE CORPUS (20 REALISTIC SAMPLES)
-# ============================================================
-
-NCBI = [
-    {"tokens": ["The","patient","was","diagnosed","with","lung","cancer","after","a","CT","scan","."],
-     "labels": ["O","O","O","O","O","B-Disease","I-Disease","O","O","O","O","O"]},
-    {"tokens": ["Hereditary","breast","cancer","is","associated","with","BRCA1","mutations","."],
-     "labels": ["B-Disease","I-Disease","I-Disease","O","O","O","O","O","O"]},
-    {"tokens": ["The","child","presented","with","Kawasaki","disease","and","fever","."],
-     "labels": ["O","O","O","O","B-Disease","I-Disease","O","O","O"]},
-    {"tokens": ["Chronic","kidney","disease","is","a","major","public","health","concern","."],
-     "labels": ["B-Disease","I-Disease","I-Disease","O","O","O","O","O","O","O"]},
-    {"tokens": ["Type","1","diabetes","requires","lifelong","insulin","therapy","."],
-     "labels": ["B-Disease","I-Disease","I-Disease","O","O","O","O","O"]},
-    {"tokens": ["He","was","treated","for","bacterial","pneumonia","in","the","ICU","."],
-     "labels": ["O","O","O","O","O","B-Disease","O","O","O","O"]},
-    {"tokens": ["The","study","included","patients","with","Alzheimer","disease","."],
-     "labels": ["O","O","O","O","O","B-Disease","I-Disease","O"]},
-    {"tokens": ["Chronic","obstructive","pulmonary","disease","is","linked","to","smoking","."],
-     "labels": ["B-Disease","I-Disease","I-Disease","I-Disease","O","O","O","O","O"]},
-    {"tokens": ["The","infant","had","respiratory","syncytial","virus","infection","."],
-     "labels": ["O","O","O","B-Disease","I-Disease","I-Disease","I-Disease","O"]},
-    {"tokens": ["Rheumatoid","arthritis","causes","chronic","joint","inflammation","."],
-     "labels": ["B-Disease","I-Disease","O","O","O","O","O"]},
-    {"tokens": ["Patients","with","celiac","disease","must","avoid","gluten","."],
-     "labels": ["O","O","B-Disease","I-Disease","O","O","O","O"]},
-    {"tokens": ["He","suffers","from","Parkinson","disease","and","tremors","."],
-     "labels": ["O","O","O","B-Disease","I-Disease","O","O","O"]},
-    {"tokens": ["Inflammatory","bowel","disease","requires","long","term","management","."],
-     "labels": ["B-Disease","I-Disease","I-Disease","O","O","O","O","O"]},
-    {"tokens": ["The","patient","reported","symptoms","consistent","with","migraine","attacks","."],
-     "labels": ["O","O","O","O","O","O","B-Disease","O","O"]},
-    {"tokens": ["He","had","acute","myocardial","infarction","last","year","."],
-     "labels": ["O","O","O","B-Disease","I-Disease","O","O","O"]},
-    {"tokens": ["The","woman","was","diagnosed","with","ovarian","cancer","at","age","45","."],
-     "labels": ["O","O","O","O","O","B-Disease","I-Disease","O","O","O","O"]},
-    {"tokens": ["Dengue","fever","is","transmitted","by","mosquitoes","."],
-     "labels": ["B-Disease","I-Disease","O","O","O","O","O"]},
-    {"tokens": ["The","dog","bite","led","to","rabies","infection","."],
-     "labels": ["O","O","O","O","O","B-Disease","I-Disease","O"]},
-    {"tokens": ["COVID","19","infection","can","lead","to","severe","respiratory","failure","."],
-     "labels": ["B-Disease","I-Disease","I-Disease","O","O","O","O","O","O","O"]},
-    {"tokens": ["He","developed","gastric","cancer","after","persistent","H","pylori","infection","."],
-     "labels": ["O","O","O","B-Disease","I-Disease","O","O","O","O","O"]},
-]
-
-# ============================================================
-# 4. PROMPT FORMAT
-# ============================================================
-
-def make_prompt(ex):
-    return (
-        "You are a biomedical expert. Answer with yes, no, or maybe.\n"
-        f"Context: {ex['context']}\n"
-        f"Question: {ex['question']}\n"
-        "Answer:"
-    )
-
-# ============================================================
-# 5. HF QA MODELS
-# ============================================================
-
-class HFQA:
-    def __init__(self, name):
-        print(f"\nLoading QA model: {name}")
-        self.name = name
-        self.is_seq2seq = False
-
-        try:
-            self.tok = AutoTokenizer.from_pretrained(name)
-            self.model = AutoModelForSeq2SeqLM.from_pretrained(name).to(DEVICE)
-            self.is_seq2seq = True
-        except:
-            self.tok = AutoTokenizer.from_pretrained(name)
-            self.model = AutoModelForCausalLM.from_pretrained(name).to(DEVICE)
-
-    @torch.no_grad()
-    def predict(self, ex):
-        prompt = make_prompt(ex)
-
-        if self.is_seq2seq:
-            enc = self.tok(prompt, return_tensors="pt").to(DEVICE)
-            out = self.model.generate(**enc, max_new_tokens=5)
-            ans = self.tok.decode(out[0], skip_special_tokens=True)
-        else:
-            enc = self.tok(prompt, return_tensors="pt").to(DEVICE)
-            out = self.model.generate(**enc, max_new_tokens=5)
-            ans = self.tok.decode(out[0], skip_special_tokens=True)
-
-        ans = ans.lower()
-
-        if "yes" in ans:
-            return "yes"
-        if "no" in ans:
-            return "no"
-        if "maybe" in ans:
-            return "maybe"
-        return "maybe"
-
-# ============================================================
-# 6. HF CLASSIFIER QA (BioMed-RoBERTa)
-# ============================================================
-
-class HFClassifierQA:
-    def __init__(self, name):
-        print(f"\nLoading classifier QA: {name}")
-        self.tok = AutoTokenizer.from_pretrained(name)
-        self.model = AutoModelForSequenceClassification.from_pretrained(name).to(DEVICE)
-        self.id2label = self.model.config.id2label
-
-    @torch.no_grad()
-    def predict(self, ex):
-        prompt = make_prompt(ex)
-        enc = self.tok(prompt, return_tensors="pt", truncation=True).to(DEVICE)
-        logits = self.model(**enc).logits
-        pred = logits.argmax(-1).item()
-        label = self.id2label[pred].lower()
-
-        if "yes" in label:
-            return "yes"
-        if "no" in label:
-            return "no"
-        return "maybe"
-
-# ============================================================
-# 7. NER MODEL
-# ============================================================
-
-class HFNER:
-    def __init__(self, name):
-        print(f"\nLoading NER model: {name}")
-        self.tok = AutoTokenizer.from_pretrained(name, add_prefix_space=True)
-        self.model = AutoModelForTokenClassification.from_pretrained(name).to(DEVICE)
-        self.id2label = self.model.config.id2label
-
-    @torch.no_grad()
-    def predict(self, tokens):
-        enc = self.tok(tokens, is_split_into_words=True, return_tensors="pt").to(DEVICE)
-        logits = self.model(**enc).logits[0]
-        pred_ids = logits.argmax(-1).cpu().tolist()
-        word_ids = enc.word_ids()
-
-        result = []
-        for idx in range(len(tokens)):
-            sub = [pred_ids[i] for i, w in enumerate(word_ids) if w == idx]
-            result.append(self.id2label[sub[0]] if sub else "O")
-
-        return result
-
-# ============================================================
-# 8. METRICS
-# ============================================================
 
 def accuracy(preds, refs):
     return sum(p == r for p, r in zip(preds, refs)) / len(refs)
 
-def ner_f1(preds, refs):
-    def norm(label):
-        return "B-Disease" if "dis" in label.lower() else "O"
-    new_preds = [[norm(p) for p in seq] for seq in preds]
-    new_refs  = [[norm(r) for r in seq] for seq in refs]
-    return f1_score(new_refs, new_preds)
+
+def parse_yesno_maybe(output):
+    s = output.lower()
+    idx = {k: s.rfind(k) for k in ("yes", "no", "maybe")}
+    best = max(idx, key=idx.get)
+    return best if idx[best] != -1 else "maybe"
+
+
+def parse_abcd(output):
+    s = output.upper()
+
+    m = re.search(r"ANSWER\s*[:\-]?\s*([ABCD])", s)
+    if m:
+        return m.group(1)
+
+    for ch in reversed(s):
+        if ch in "ABCD":
+            return ch
+
+    for ch in s:
+        if ch in "ABCD":
+            return ch
+
+    return "A"
+
 
 # ============================================================
-# 9. MAIN
+# DATA LOADERS
 # ============================================================
+def load_pubmedqa():
+    print("Loading PubMedQA from HF Hub...")
+    raw = load_dataset("pubmed_qa", "pqa_labeled")["train"]
 
+    out = []
+    for ex in raw:
+        q = ex["question"]
+        ctx_dict = ex["context"]
+        if isinstance(ctx_dict, dict) and "contexts" in ctx_dict:
+            ctx = " ".join(ctx_dict["contexts"])
+        else:
+            ctx = str(ctx_dict)
+        label = ex["final_decision"].lower().strip()
+        if label not in {"yes", "no", "maybe"}:
+            label = "maybe"
+        out.append({"question": q, "context": ctx, "label": label})
+
+    print(f"PubMedQA size: {len(out)}")
+    print("Label counts:", Counter([e["label"] for e in out]))
+    return out
+
+
+def load_medqa():
+    print("Loading MedQA-USMLE from HF Hub...")
+    ds = load_dataset(
+        "bigbio/med_qa",
+        "med_qa_en_4options_bigbio_qa",
+        trust_remote_code=True,
+    )["test"]
+
+    out = []
+    for ex in ds:
+        choices = ex["choices"]
+        ans_text = ex["answer"][0]
+        gold_idx = choices.index(ans_text) if ans_text in choices else 0
+        gold_letter = "ABCD"[gold_idx]
+        out.append({
+            "question": ex["question"],
+            "choices": choices,
+            "label": gold_letter
+        })
+
+    print(f"MedQA size: {len(out)}")
+    return out
+
+
+def load_ncbi_local():
+    print("Loading NCBI Disease from local TSV...")
+    if not os.path.exists(NCBI_TSV_PATH):
+        raise FileNotFoundError(NCBI_TSV_PATH)
+
+    items = []
+    tokens, labels = [], []
+
+    with open(NCBI_TSV_PATH, "r", encoding="utf-8") as f:
+        for line in f:
+            line = line.rstrip("\n")
+            if line == "":
+                if tokens:
+                    items.append({"tokens": tokens, "labels": labels})
+                    tokens, labels = [], []
+                continue
+
+            parts = line.split("\t")
+            if len(parts) != 2:
+                continue
+            tok, lab = parts
+            tokens.append(tok)
+            labels.append(lab)
+
+    if tokens:
+        items.append({"tokens": tokens, "labels": labels})
+
+    print(f"NCBI disease sentences: {len(items)}")
+    return items
+
+
+# ============================================================
+# MODEL LOADING (WITH FIXED PADDING)
+# ============================================================
+def load_generative_model(name):
+    print(f"Loading model: {name}")
+    tok = AutoTokenizer.from_pretrained(name)
+
+    try:
+        # seq2seq
+        model = AutoModelForSeq2SeqLM.from_pretrained(name)
+        is_seq2seq = True
+
+    except Exception:
+        # causal LM (BioGPT)
+        model = AutoModelForCausalLM.from_pretrained(name)
+        is_seq2seq = False
+
+        # ★★★★★ FIX PADDING FOR BioGPT ★★★★★
+        tok.padding_side = "left"
+        if tok.pad_token is None:
+            tok.pad_token = tok.eos_token
+
+    if DEVICE == "cuda":
+        model.to(DEVICE)
+        if USE_FP16:
+            model.half()
+
+    model.eval()
+    return tok, model, is_seq2seq
+
+
+def load_ner_model(name="d4data/biomedical-ner-all"):
+    print(f"Loading NER model: {name}")
+    tok = AutoTokenizer.from_pretrained(name, add_prefix_space=True)
+    model = AutoModelForTokenClassification.from_pretrained(name)
+
+    if DEVICE == "cuda":
+        model.to(DEVICE)
+        if USE_FP16:
+            model.half()
+
+    model.eval()
+    return tok, model, model.config.id2label
+
+
+# ============================================================
+# PUBMEDQA
+# ============================================================
+def eval_pubmedqa(model_name, data):
+    tok, model, _ = load_generative_model(model_name)
+
+    preds, refs = [], []
+    bs = 8
+    n = min(len(data), PUBMED_LIMIT)
+    print(f"Evaluating {model_name} on PubMedQA (n={n}) ...")
+
+    for start in range(0, n, bs):
+        batch = data[start:start + bs]
+
+        prompts = []
+        for ex in batch:
+            q = truncate_words(ex["question"], 40)
+            ctx = truncate_words(ex["context"], 200)
+            if ctx:
+                p = (
+                    "Answer with yes, no, or maybe.\n"
+                    f"Question: {q}\n"
+                    f"Context: {ctx}\n"
+                    "Answer:"
+                )
+            else:
+                p = (
+                    "Answer with yes, no, or maybe.\n"
+                    f"Question: {q}\n"
+                    "Answer:"
+                )
+            prompts.append(p)
+
+        enc = tok(
+            prompts, return_tensors="pt",
+            padding=True, truncation=True, max_length=512
+        ).to(DEVICE)
+
+        with torch.no_grad():
+            if DEVICE == "cuda" and USE_FP16:
+                with torch.cuda.amp.autocast():
+                    out = model.generate(**enc, max_new_tokens=5)
+            else:
+                out = model.generate(**enc, max_new_tokens=5)
+
+        decoded = tok.batch_decode(out, skip_special_tokens=True)
+
+        for ex, dec in zip(batch, decoded):
+            preds.append(parse_yesno_maybe(dec))
+            refs.append(ex["label"])
+
+    acc = accuracy(preds, refs)
+    print(f"Accuracy: {acc:.3f}")
+    return acc
+
+
+# ============================================================
+# MEDQA
+# ============================================================
+def eval_medqa(model_name, data):
+    tok, model, _ = load_generative_model(model_name)
+
+    preds, refs = [], []
+    bs = 4
+    n = min(len(data), MEDQA_LIMIT)
+    print(f"Evaluating {model_name} on MedQA (n={n}) ...")
+
+    for start in range(0, n, bs):
+        batch = data[start:start + bs]
+
+        prompts = []
+        for ex in batch:
+            q = truncate_words(ex["question"], 120)
+            choices = ex["choices"]
+            lines = "\n".join(f"{l}. {t}" for l, t in zip("ABCD", choices))
+            prompts.append(
+                "Choose the single best answer and reply with only A, B, C, or D.\n\n"
+                f"Question: {q}\n\nChoices:\n{lines}\n\nAnswer:"
+            )
+
+        enc = tok(
+            prompts, return_tensors="pt",
+            padding=True, truncation=True, max_length=512
+        ).to(DEVICE)
+
+        with torch.no_grad():
+            if DEVICE == "cuda" and USE_FP16:
+                with torch.cuda.amp.autocast():
+                    out = model.generate(**enc, max_new_tokens=3)
+            else:
+                out = model.generate(**enc, max_new_tokens=3)
+
+        decoded = tok.batch_decode(out, skip_special_tokens=True)
+
+        for ex, dec in zip(batch, decoded):
+            preds.append(parse_abcd(dec))
+            refs.append(ex["label"])
+
+    acc = accuracy(preds, refs)
+    print(f"Accuracy: {acc:.3f}")
+    return acc
+
+
+# ============================================================
+# NCBI NER
+# ============================================================
+def map_ncbi_gold(l):
+    return "B-Disease" if l in ("B", "I") else "O"
+
+
+def map_ncbi_pred(l):
+    ll = l.lower()
+    return "B-Disease" if ("disease" in ll or "disorder" in ll) else "O"
+
+
+def eval_ncbi(ncbi_data):
+    tok, model, id2label = load_ner_model()
+
+    preds_all, refs_all = [], []
+    n = min(len(ncbi_data), NCBI_LIMIT)
+    print(f"Evaluating NER on NCBI (n={n}) ...")
+
+    for ex in ncbi_data[:n]:
+        tokens = ex["tokens"]
+        gold = [map_ncbi_gold(l) for l in ex["labels"]]
+
+        enc = tok(
+            tokens,
+            is_split_into_words=True,
+            return_tensors="pt",
+            truncation=True,
+            max_length=256,
+        ).to(DEVICE)
+
+        with torch.no_grad():
+            if DEVICE == "cuda" and USE_FP16:
+                with torch.cuda.amp.autocast():
+                    logits = model(**enc).logits
+            else:
+                logits = model(**enc).logits
+
+        pred_ids = logits.argmax(-1)[0].cpu().tolist()
+        word_ids = enc.word_ids(batch_index=0)
+
+        pred_raw = []
+        for i in range(len(tokens)):
+            sub = [pred_ids[j] for j, wid in enumerate(word_ids) if wid == i]
+            pred_raw.append(id2label[sub[0]] if sub else "O")
+
+        pred = [map_ncbi_pred(l) for l in pred_raw]
+
+        refs_all.append(gold)
+        preds_all.append(pred)
+
+    f1 = f1_score(refs_all, preds_all)
+    print(f"NER F1 (Disease vs O): {f1:.3f}")
+    return f1
+
+
+# ============================================================
+# MAIN
+# ============================================================
 def main():
-    qa_models = [
-        "google/flan-t5-base",
-        "allenai/biomed_roberta_base",
-        "microsoft/BioGPT-Large",
-    ]
+    print("DEVICE:", DEVICE, "| fp16:", USE_FP16)
 
-    ner_models = [
-        "d4data/biomedical-ner-all"
-    ]
+    pubmed = load_pubmedqa()
+    medqa = load_medqa()
+    ncbi = load_ncbi_local()
 
-    # =======================
-    print("\n===== BIOASQ YES/NO QA =====")
-    for m in qa_models:
-        model = HFClassifierQA(m) if "roberta" in m.lower() else HFQA(m)
-        preds = [model.predict(ex) for ex in BIOASQ_YESNO]
-        refs = [ex["answer"] for ex in BIOASQ_YESNO]
-        print(f"{m:45s} accuracy = {accuracy(preds, refs):.3f}")
+    print("\n===== PUBMEDQA (google/flan-t5-base) =====")
+    eval_pubmedqa("google/flan-t5-base", pubmed)
 
-    # =======================
-    print("\n===== PUBMEDQA REASONING =====")
-    for m in qa_models:
-        model = HFClassifierQA(m) if "roberta" in m.lower() else HFQA(m)
-        preds = [model.predict(ex) for ex in PUBMEDQA]
-        refs = [ex["answer"] for ex in PUBMEDQA]
-        print(f"{m:45s} accuracy = {accuracy(preds, refs):.3f}")
+    print("\n===== PUBMEDQA (microsoft/BioGPT-Large) =====")
+    eval_pubmedqa("microsoft/BioGPT-Large", pubmed)
 
-    # =======================
-    print("\n===== NCBI DISEASE NER =====")
-    for m in ner_models:
-        model = HFNER(m)
-        preds = [model.predict(ex["tokens"]) for ex in NCBI]
-        refs = [ex["labels"] for ex in NCBI]
-        print(f"{m:45s} F1 = {ner_f1(preds, refs):.3f}")
+    print("\n===== MEDQA (google/flan-t5-base) =====")
+    eval_medqa("google/flan-t5-base", medqa)
+
+    print("\n===== MEDQA (microsoft/BioGPT-Large) =====")
+    eval_medqa("microsoft/BioGPT-Large", medqa)
+
+    print("\n===== NCBI DISEASE NER (d4data/biomedical-ner-all) =====")
+    eval_ncbi(ncbi)
 
 
 if __name__ == "__main__":

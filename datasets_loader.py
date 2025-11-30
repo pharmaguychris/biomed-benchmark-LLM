@@ -25,21 +25,36 @@ def load_mednli(split="train"):
 
 
 
-def load_pubmedqa(split="train"):
-    ds = load_dataset("pubmed_qa", "pqa_artificial", split=split)
-    if MAX_EXAMPLES:
-        ds = ds.select(range(min(MAX_EXAMPLES, len(ds))))
+def load_pubmedqa():
+    """
+    Loads pubmed_qa:pqa_labeled from HF hub.
+    Your dataset only has a 'train' split with 1000 rows.
+    Returns standardized list of dicts:
+        {question, context, answer}
+    """
+    from datasets import load_dataset
 
-    examples = []
-    for i, ex in enumerate(ds):
-        examples.append({
-            "id": f"pubmedqa-{split}-{i}",
-            "task": "pubmedqa",
-            "question": ex["question"],
-            "context": ex["context"],
-            "answer": ex["final_decision"]
+    print("Loading PubMedQA from HF Hub...")
+    raw = load_dataset("pubmed_qa", "pqa_labeled")["train"]  # only split available
+
+    data = []
+    for item in raw:
+        question = item["question"]
+        context_list = item["context"]
+        context = context_list[0] if isinstance(context_list, list) and len(context_list) > 0 else ""
+        answer = item["final_decision"].lower()
+
+        if answer not in ["yes", "no", "maybe"]:
+            answer = "maybe"
+
+        data.append({
+            "question": question,
+            "context": context,
+            "answer": answer
         })
-    return examples
+
+    return data
+
 
 
 def load_ncbi(split="train"):
